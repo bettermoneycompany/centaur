@@ -6,6 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 # Bump this pin to refresh the trust store even when the base image is cached.
 ARG CA_CERTIFICATES_VERSION=20260816ubuntu0.24.04.1
+# Keep the sandbox runtime compatible with repositories that pin a Node patch release.
+ARG NODE_VERSION=24.22.1
 
 # ── System packages (cached unless base image or package pins change) ─────────
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -82,7 +84,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
       | tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null \
-    && apt-get update && apt-get install -y --no-install-recommends gh nodejs docker-ce-cli google-cloud-cli \
+    && apt-get update && apt-get install -y --no-install-recommends gh nodejs=${NODE_VERSION}-1nodesource1 docker-ce-cli google-cloud-cli \
+    && node --version | grep -Fx "v${NODE_VERSION}" \
     && gcloud --version >/dev/null \
     && bq version >/dev/null \
     && rm -rf /usr/share/doc /usr/share/man /usr/share/info
