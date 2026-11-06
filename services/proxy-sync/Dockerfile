@@ -36,7 +36,7 @@ RUN --mount=type=cache,id=proxy-sync-cargo-registry-${TARGETARCH},target=/usr/lo
 FROM debian:bookworm-slim
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates=20250419~deb12u2 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/bin/centaur-proxy-sync /usr/local/bin/centaur-proxy-sync
 USER 65532:65532

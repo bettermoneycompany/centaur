@@ -2,10 +2,13 @@
 
 FROM ubuntu:24.04 AS toolchain
 
-ENV PYTHONDONTWRITEBYTECODE=1
+# Pillow wheels bundle vulnerable Brotli; compile against the patched system libraries.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_BINARY=pillow \
+    UV_NO_BINARY_PACKAGE=pillow
 
 # Bump this pin to refresh the trust store even when the base image is cached.
-ARG CA_CERTIFICATES_VERSION=20260816ubuntu0.24.04.1
+ARG CA_CERTIFICATES_VERSION=20260816ubuntu0.24.04.2
 
 # ── System packages (cached unless base image or package pins change) ─────────
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -13,9 +16,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
     git curl wget ca-certificates=${CA_CERTIFICATES_VERSION} gnupg lsb-release sudo \
     build-essential pkg-config cmake ninja-build \
-    ffmpeg ghostscript dvisvgm file \
+    libbrotli1=1.1.0-2ubuntu0.1 ffmpeg ghostscript dvisvgm file \
     libssl-dev libclang-dev protobuf-compiler \
-    libcairo2-dev libpango1.0-dev \
+    libcairo2-dev libpango1.0-dev libjpeg-dev libfreetype6-dev \
     ripgrep fd-find jq tree tmux unzip xz-utils gettext-base vim \
     postgresql-client libpq-dev \
     python3 python3-pip python3-venv python3-dev \
@@ -194,7 +197,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libxcomposite1 libxcursor1 libxdamage1 libxfixes3 libxi6 \
         libgtk-3-0t64 libpangocairo-1.0-0 libpango-1.0-0 libatk1.0-0t64 \
         libcairo-gobject2 libcairo2 libgdk-pixbuf-2.0-0 libxrender1 \
-        libasound2t64 libfreetype6 libfontconfig1 libdbus-1-3 libnss3 \
+        libasound2t64 libfreetype6 libfontconfig1 libdbus-1-3 libnss3=2:3.98-1ubuntu0.3 \
         libnspr4 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0 \
         libatspi2.0-0t64 libcups2t64 libxshmfence1 libgbm1 \
         fonts-noto-color-emoji fonts-noto-cjk fonts-freefont-ttf; \
