@@ -37,7 +37,7 @@ ARG PANDOC_VERSION=3.13
 ARG TARGETARCH
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates=20250419~deb12u2 curl
 RUN case "$TARGETARCH" in \
       amd64) checksum=38aa33b325a2bc96a4c39409631212db55702f564250bcdbead180b3bf646389 ;; \
       arm64) checksum=21e1d4ba09bd0b334590d204580fd4f6629b21be4ab6a32b26cc98982e9e0c68 ;; \
@@ -54,7 +54,7 @@ RUN case "$TARGETARCH" in \
 FROM debian:bookworm-slim
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates poppler-utils \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates=20250419~deb12u2 poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=pandoc /usr/local/bin/pandoc /usr/local/bin/pandoc
 COPY --from=builder /usr/local/bin/centaur-company-context /usr/local/bin/centaur-company-context

@@ -49,7 +49,7 @@ RUN --mount=type=cache,id=api-rs-cargo-registry-${TARGETARCH},target=/usr/local/
 FROM debian:bookworm-slim
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git python3 python3-pip
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates=20250419~deb12u2 curl git python3 python3-pip
 COPY --from=builder /usr/local/bin/centaur-api-server /usr/local/bin/centaur-api-server
 WORKDIR /app
 COPY centaur_sdk/ /app/centaur_sdk/

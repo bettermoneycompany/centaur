@@ -198,3 +198,17 @@ A few honest caveats:
   over-eager harness, or buggy tool code. Tool design, especially for
   destructive operations, should assume the agent will occasionally do
   the wrong thing.
+
+## Native dependency updates
+
+The Debian service images pin `ca-certificates=20250419~deb12u2` to remove the
+eMudhra trust paths. The Ubuntu 24.04 sandbox pins its independent NSS store to
+`libnss3=2:3.98-1ubuntu0.3` and its system Brotli to `libbrotli1=1.1.0-2ubuntu0.1`.
+The latter protects FFmpeg's JPEG XL decoding path.
+
+Pillow 13.0.0 Linux wheels bundle a separate vulnerable Brotli copy. The sandbox
+sets `PIP_NO_BINARY=pillow` and `UV_NO_BINARY_PACKAGE=pillow`, and supplies the
+headers needed to build against system FreeType and Brotli. Both ordinary pip
+installs and isolated tool environments inherit this policy. See the
+[Pillow upstream report](https://github.com/python-pillow/Pillow/issues/10337).
+Rebuild images and replace existing sandboxes before declaring the rollout complete.
