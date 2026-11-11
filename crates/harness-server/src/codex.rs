@@ -136,9 +136,7 @@ pub(crate) fn run_codex_blocks_server(config: CodexHarnessServer) -> Result<()> 
     let mut request_id = 1_i64;
     let mut thread_id: Option<String> = None;
     let mut thread_model: Option<String> = None;
-    // The provider the thread was started/resumed on. codex pins the provider at
-    // thread start (the app-server protocol has no per-turn provider), so this
-    // lets a later conflicting override be surfaced rather than silently dropped.
+    // A provider change requires a fresh app-server to resume the persisted thread.
     let mut thread_provider: Option<String> = None;
     let (command_tx, command_rx) = mpsc::channel();
     let (active_turn_tx, active_turn_rx) = mpsc::channel();
@@ -227,10 +225,24 @@ pub(crate) fn run_codex_blocks_server(config: CodexHarnessServer) -> Result<()> 
                 reasoning,
                 trace_context,
             }) => {
+                crate::session_prompt::run_session_prompt_hooks(Some(&trace_context), "codex");
                 let traceparent = trace_context.effective_traceparent();
-                let model = model.or_else(|| config.default_model());
-                let model_provider =
-                    config.model_provider_for(provider.as_deref(), model.as_deref());
+                let requested_provider = provider
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|provider| !provider.is_empty());
+                // A new model without a provider takes that model's default
+                // route; this is the only place the default is resolved.
+                let model_changed = model
+                    .as_deref()
+                    .is_some_and(|model| thread_model.as_deref() != Some(model));
+                let model = model
+                    .or_else(|| thread_model.clone())
+                    .or_else(|| config.default_model());
+                let model_provider = match (requested_provider, thread_provider.as_deref()) {
+                    (None, Some(pinned)) if !model_changed => pinned.to_owned(),
+                    _ => config.model_provider_for(requested_provider, model.as_deref()),
+                };
                 let mut telemetry = TurnTelemetry::new(
                     Some(&trace_context),
                     crate::HarnessKind::Codex,
@@ -241,6 +253,14 @@ pub(crate) fn run_codex_blocks_server(config: CodexHarnessServer) -> Result<()> 
                 );
                 turn_active.store(true, Ordering::SeqCst);
                 let result = (|| -> Result<()> {
+                    let switching_provider = thread_provider
+                        .as_deref()
+                        .is_some_and(|pinned| pinned != model_provider);
+                    if switching_provider {
+                        // Codex 0.165 ignores resume overrides for a loaded thread.
+                        // A fresh app-server resumes its persisted history with the new provider.
+                        codex = None;
+                    }
                     if let Some(child) = codex.as_mut()
                         && child.child.try_wait()?.is_some()
                     {
@@ -263,7 +283,11 @@ pub(crate) fn run_codex_blocks_server(config: CodexHarnessServer) -> Result<()> 
                                 &mut stdout,
                                 &mut request_id,
                                 model.as_deref().or(thread_model.as_deref()),
-                                thread_provider.as_deref().unwrap_or(&model_provider),
+                                if switching_provider {
+                                    &model_provider
+                                } else {
+                                    thread_provider.as_deref().unwrap_or(&model_provider)
+                                },
                                 Some(resume_id),
                                 traceparent.as_deref(),
                             )?;
@@ -271,6 +295,15 @@ pub(crate) fn run_codex_blocks_server(config: CodexHarnessServer) -> Result<()> 
                                 return Err(HarnessServerError::Protocol(
                                     "Codex app-server resumed a different thread".to_owned(),
                                 ));
+                            }
+                            if switching_provider {
+                                if resumed.provider.as_deref() != Some(&model_provider) {
+                                    return Err(HarnessServerError::Protocol(format!(
+                                        "Codex did not switch to provider `{model_provider}`; message was not sent"
+                                    )));
+                                }
+                                thread_provider = Some(model_provider.clone());
+                                thread_model = resumed.model;
                             }
                         }
                         codex = Some(child);
@@ -285,7 +318,6 @@ pub(crate) fn run_codex_blocks_server(config: CodexHarnessServer) -> Result<()> 
                         input,
                         client_user_message_id,
                         (model, model_provider),
-                        provider,
                         reasoning,
                         &active_turn_rx,
                         traceparent.as_deref(),
@@ -388,7 +420,6 @@ fn run_codex_user_turn<W: Write>(
     input: Vec<UserInput>,
     client_user_message_id: Option<String>,
     model_and_provider: (Option<String>, String),
-    requested_provider: Option<String>,
     reasoning: Option<String>,
     active_turn_rx: &Receiver<CodexActiveTurnRequest>,
     traceparent: Option<&str>,
@@ -408,20 +439,6 @@ fn run_codex_user_turn<W: Write>(
         *thread_id = Some(thread.id);
         *thread_model = thread.model;
         *thread_provider = Some(model_provider.clone());
-    } else if let (Some(requested), Some(pinned)) =
-        (requested_provider.as_deref(), thread_provider.as_deref())
-        && requested != pinned
-    {
-        // codex pins the provider at thread start, so an explicit mid-thread
-        // override (e.g. a later `--bedrock`) cannot take effect. Surface it
-        // rather than silently staying on the pinned provider; switching
-        // providers requires a new thread (a harness flag like `--bedrock`
-        // already restarts across harnesses, but a codex->codex provider switch
-        // does not).
-        eprintln!(
-            "Codex provider `{requested}` ignored: this thread is pinned to `{pinned}` \
-             (provider is fixed at thread start; start a new thread to switch providers)"
-        );
     }
     if let Some(model) = model.as_deref() {
         *thread_model = Some(model.to_owned());
@@ -509,6 +526,7 @@ fn run_codex_user_turn<W: Write>(
 struct StartedCodexThread {
     id: String,
     model: Option<String>,
+    provider: Option<String>,
 }
 
 fn start_or_resume_thread<W: Write>(
@@ -557,11 +575,28 @@ fn start_or_resume_thread<W: Write>(
     if let Some(model) = model {
         params["model"] = Value::String(model.to_owned());
     }
+    // A custom provider can opt out of Codex's hosted `web_search` tool (e.g. a
+    // self-hosted model whose endpoint rejects hosted tools). A provider switch
+    // always resumes in a fresh app-server, so the override tracks the provider.
+    if custom_provider_disables_web_search(
+        env::var("CODEX_CUSTOM_PROVIDERS").ok().as_deref(),
+        model_provider,
+    ) {
+        params["config"] = json!({ "web_search": "disabled" });
+    }
 
     let id = next_request_id(request_id);
     codex.send_request(id, method, params, traceparent)?;
     let result = codex.read_response_or_forward(id, stdout, None)?;
     started_codex_thread_from_response(&result, method)
+}
+
+/// Whether a custom provider in `CODEX_CUSTOM_PROVIDERS` sets
+/// `webSearch: false`. Absent, `true`, or malformed config keeps Codex's default.
+fn custom_provider_disables_web_search(raw: Option<&str>, provider: &str) -> bool {
+    raw.and_then(|raw| serde_json::from_str::<Value>(raw.trim()).ok())
+        .and_then(|providers| providers.get(provider)?.get("webSearch")?.as_bool())
+        == Some(false)
 }
 
 fn started_codex_thread_from_response(result: &Value, method: &str) -> Result<StartedCodexThread> {
@@ -578,7 +613,15 @@ fn started_codex_thread_from_response(result: &Value, method: &str) -> Result<St
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_owned);
-    Ok(StartedCodexThread { id, model })
+    let provider = result
+        .get("modelProvider")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    Ok(StartedCodexThread {
+        id,
+        model,
+        provider,
+    })
 }
 
 struct CodexJsonRpcChild {
@@ -1165,6 +1208,20 @@ mod tests {
             codex.model_provider_for(Some("amazon-bedrock"), Some("anthropic/claude-fable-5")),
             "amazon-bedrock"
         );
+    }
+
+    #[test]
+    fn custom_provider_web_search_reads_provider_catalog() {
+        let raw = r#"{"off":{"webSearch":false},"on":{"webSearch":true},"unset":{"name":"U"},"bad":{"webSearch":"false"}}"#;
+        assert!(custom_provider_disables_web_search(Some(raw), "off"));
+        for provider in ["on", "unset", "bad", "openai"] {
+            assert!(
+                !custom_provider_disables_web_search(Some(raw), provider),
+                "{provider}"
+            );
+        }
+        assert!(!custom_provider_disables_web_search(Some("{"), "off"));
+        assert!(!custom_provider_disables_web_search(None, "off"));
     }
 
     #[test]
