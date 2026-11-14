@@ -2,3 +2,6 @@
 # service lockfile resolution.
 packages:
   - .
+
+overrides:
+  undici: 7.30.2
